@@ -1,14 +1,18 @@
 #include "spectral_target.hpp"
 
+#include <stddef.h>
 #include <distingnt/api.h>
 #include <new>
 
-static const char* kModeStrings[] = { "Bypass", "Capture", "Match", NULL };
+static const char* kModeStrings[] = { "Bypass", "Capture", "Match", "Watch", NULL };
 
 enum {
-    kParamInput,
-    kParamOutput,
-    kParamOutputMode,
+    kParamInputL,
+    kParamInputR,
+    kParamOutputL,
+    kParamOutputLMode,
+    kParamOutputR,
+    kParamOutputRMode,
     kParamMode,
     kParamLearningRate,
     kParamSmoothing,
@@ -17,16 +21,18 @@ enum {
 };
 
 static const _NT_parameter parameters[] = {
-    NT_PARAMETER_AUDIO_INPUT("Input", 1, 1)
-    NT_PARAMETER_AUDIO_OUTPUT_WITH_MODE("Output", 1, 13)
-    { .name = "Mode", .min = 0, .max = 2, .def = 0, .unit = kNT_unitEnum, .scaling = 0, .enumStrings = kModeStrings },
+    NT_PARAMETER_AUDIO_INPUT("Input L", 1, 1)
+    NT_PARAMETER_AUDIO_INPUT("Input R", 1, 2)
+    NT_PARAMETER_AUDIO_OUTPUT_WITH_MODE("Output L", 1, 13)
+    NT_PARAMETER_AUDIO_OUTPUT_WITH_MODE("Output R", 1, 14)
+    { .name = "Mode", .min = 0, .max = 3, .def = 0, .unit = kNT_unitEnum, .scaling = 0, .enumStrings = kModeStrings },
     { .name = "Learn", .min = 0, .max = 100, .def = 40, .unit = kNT_unitPercent, .scaling = 0, .enumStrings = NULL },
     { .name = "Detail", .min = 2, .max = 96, .def = 32, .unit = kNT_unitNone, .scaling = 0, .enumStrings = NULL },
     { .name = "Amount", .min = 0, .max = 100, .def = 100, .unit = kNT_unitPercent, .scaling = 0, .enumStrings = NULL },
 };
 
 static const uint8_t pageAnalysis[] = { kParamMode, kParamLearningRate, kParamSmoothing, kParamAmount };
-static const uint8_t pageRouting[] = { kParamInput, kParamOutput, kParamOutputMode };
+static const uint8_t pageRouting[] = { kParamInputL, kParamInputR, kParamOutputL, kParamOutputLMode, kParamOutputR, kParamOutputRMode };
 
 static const _NT_parameterPage parameterPages[] = {
     { .name = "Analysis", .numParams = ARRAY_SIZE(pageAnalysis), .group = 0, .unused = { 0, 0 }, .params = pageAnalysis },
@@ -103,15 +109,64 @@ static void step(_NT_algorithm* self, float* busFrames, int numFramesBy4) {
     applyAllParameters(alg);
 
     const int numFrames = numFramesBy4 * 4;
-    const int inputBus = alg->v[kParamInput] - 1;
-    const int outputBus = alg->v[kParamOutput] - 1;
-    if (inputBus < 0 || outputBus < 0)
+    const int inputLBus = alg->v[kParamInputL] - 1;
+    const int inputRBus = alg->v[kParamInputR] - 1;
+    const int outputLBus = alg->v[kParamOutputL] - 1;
+    const int outputRBus = alg->v[kParamOutputR] - 1;
+    if (inputLBus < 0 || inputRBus < 0 || outputLBus < 0 || outputRBus < 0)
         return;
 
-    const float* input = busFrames + inputBus * numFrames;
-    float* output = busFrames + outputBus * numFrames;
-    const bool replace = alg->v[kParamOutputMode];
-    alg->dsp->processBlock(input, output, numFrames, replace);
+    const float* inputL = busFrames + inputLBus * numFrames;
+    const float* inputR = busFrames + inputRBus * numFrames;
+    float* outputL = busFrames + outputLBus * numFrames;
+    float* outputR = busFrames + outputRBus * numFrames;
+    const bool replaceL = alg->v[kParamOutputLMode];
+    const bool replaceR = alg->v[kParamOutputRMode];
+    alg->dsp->processBlockStereo(inputL, inputR, outputL, outputR, numFrames, replaceL, replaceR);
+}
+
+static int clampInt(int value, int lo, int hi) {
+    return value < lo ? lo : (value > hi ? hi : value);
+}
+
+static void drawWatch(SpectralTarget* dsp) {
+    NT_drawText(8, 8, "Spectral Target: Watch", 15, kNT_textLeft, kNT_textNormal);
+
+    if (!dsp->targetReady()) {
+        NT_drawText(8, 28, "capture target first", 12, kNT_textLeft, kNT_textNormal);
+        return;
+    }
+
+    if (!dsp->watchReady()) {
+        NT_drawText(8, 28, "listening...", 12, kNT_textLeft, kNT_textNormal);
+        return;
+    }
+
+    NT_drawText(8, 20, "excess over target", 10, kNT_textLeft, kNT_textNormal);
+    NT_drawText(166, 20, "avg", 10, kNT_textLeft, kNT_textNormal);
+    char value[kNT_parameterStringSize];
+    NT_floatToString(value, dsp->averageExcessDb(), 1);
+    NT_drawText(196, 20, value, 12, kNT_textLeft, kNT_textNormal);
+    NT_drawText(230, 20, "dB", 10, kNT_textLeft, kNT_textNormal);
+
+    const int graphLeft = 8;
+    const int graphTop = 28;
+    const int graphBottom = 61;
+    const int barPitch = 15;
+    const int barWidth = 10;
+    NT_drawShapeI(kNT_line, graphLeft, graphBottom, 248, graphBottom, 6);
+
+    for (int band = 0; band < SpectralTarget::kNumBands; ++band) {
+        const float excess = dsp->excessBandDb(band);
+        if (excess <= 0.0f)
+            continue;
+
+        const int height = clampInt((int)(excess * 2.0f + 0.5f), 1, graphBottom - graphTop);
+        const int x0 = graphLeft + band * barPitch;
+        const int y0 = graphBottom - height;
+        const int colour = excess > 6.0f ? 15 : (excess > 3.0f ? 12 : 8);
+        NT_drawShapeI(kNT_rectangle, x0, y0, x0 + barWidth, graphBottom - 1, colour);
+    }
 }
 
 static bool draw(_NT_algorithm* self) {
@@ -119,11 +174,17 @@ static bool draw(_NT_algorithm* self) {
     if (!alg || !alg->dsp)
         return false;
 
-    const char* mode = kModeStrings[alg->dsp->mode()];
+    const SpectralTarget::Mode mode = alg->dsp->mode();
+    if (mode == SpectralTarget::kWatch) {
+        drawWatch(alg->dsp);
+        return true;
+    }
+
+    const char* modeString = (mode >= SpectralTarget::kBypass && mode <= SpectralTarget::kWatch) ? kModeStrings[mode] : "?";
     NT_drawText(8, 12, "Spectral Target", 15, kNT_textLeft, kNT_textNormal);
-    NT_drawText(8, 26, mode, 12, kNT_textLeft, kNT_textNormal);
+    NT_drawText(8, 26, modeString, 12, kNT_textLeft, kNT_textNormal);
     NT_drawText(8, 40, alg->dsp->targetReady() ? "target ready" : "capture target", 10, kNT_textLeft, kNT_textNormal);
-    return false;
+    return true;
 }
 
 static const _NT_factory factory = {

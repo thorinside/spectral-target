@@ -93,13 +93,15 @@ SpectralTarget::SpectralTarget()
       ringWrite_(0),
       ringFill_(0),
       targetCaptureCount_(0),
-      targetReady_(false) {
+      targetReady_(false),
+      watchReady_(false) {
     memset(ring_, 0, sizeof(ring_));
     memset(window_, 0, sizeof(window_));
     memset(fftInput_, 0, sizeof(fftInput_));
     memset(fftOutput_, 0, sizeof(fftOutput_));
     memset(cepstrum_, 0, sizeof(cepstrum_));
     memset(bandsDb_, 0, sizeof(bandsDb_));
+    memset(watchDb_, 0, sizeof(watchDb_));
     memset(targetDb_, 0, sizeof(targetDb_));
     memset(desiredGainDb_, 0, sizeof(desiredGainDb_));
     memset(appliedGainDb_, 0, sizeof(appliedGainDb_));
@@ -107,10 +109,14 @@ SpectralTarget::SpectralTarget()
     memset(bandCenters_, 0, sizeof(bandCenters_));
     memset(biquadCoeffs_, 0, sizeof(biquadCoeffs_));
     memset(biquadState_, 0, sizeof(biquadState_));
+    memset(biquadStateR_, 0, sizeof(biquadStateR_));
     arm_rfft_fast_init_f32(&fft_, kFftSize);
     biquad_.numStages = kNumBands;
     biquad_.pCoeffs = biquadCoeffs_;
     biquad_.pState = biquadState_;
+    biquadR_.numStages = kNumBands;
+    biquadR_.pCoeffs = biquadCoeffs_;
+    biquadR_.pState = biquadStateR_;
     prepare(sampleRate_);
 }
 
@@ -140,6 +146,7 @@ void SpectralTarget::prepare(float sampleRate) {
 void SpectralTarget::reset() {
     memset(ring_, 0, sizeof(ring_));
     memset(bandsDb_, 0, sizeof(bandsDb_));
+    memset(watchDb_, 0, sizeof(watchDb_));
     memset(targetDb_, 0, sizeof(targetDb_));
     memset(desiredGainDb_, 0, sizeof(desiredGainDb_));
     memset(appliedGainDb_, 0, sizeof(appliedGainDb_));
@@ -147,6 +154,7 @@ void SpectralTarget::reset() {
     ringFill_ = 0;
     targetCaptureCount_ = 0;
     targetReady_ = false;
+    watchReady_ = false;
     samplesUntilAnalysis_ = analysisHop_;
     resetFilterState();
     updateBiquadCoefficients();
@@ -160,7 +168,9 @@ void SpectralTarget::setMode(Mode mode) {
     if (mode_ == kCapture) {
         targetCaptureCount_ = 0;
         targetReady_ = false;
+        watchReady_ = false;
         memset(targetDb_, 0, sizeof(targetDb_));
+        memset(watchDb_, 0, sizeof(watchDb_));
         memset(desiredGainDb_, 0, sizeof(desiredGainDb_));
         memset(appliedGainDb_, 0, sizeof(appliedGainDb_));
         resetFilterState();
@@ -204,10 +214,77 @@ void SpectralTarget::processBlock(const float* input, float* output, int numFram
     runAnalysisIfDue();
 }
 
+void SpectralTarget::processBlockStereo(const float* inputL,
+                                        const float* inputR,
+                                        float* outputL,
+                                        float* outputR,
+                                        int numFrames,
+                                        bool replaceOutputL,
+                                        bool replaceOutputR) {
+    for (int i = 0; i < numFrames; ++i)
+        pushAnalysisSample(0.5f * (inputL[i] + inputR[i]));
+
+    if (mode_ == kMatch && targetReady_ && amount_ > 0.0f) {
+        int offset = 0;
+        while (offset < numFrames) {
+            const int chunk = std::min(kFftSize, numFrames - offset);
+            arm_biquad_cascade_df2T_f32(&biquad_, const_cast<float*>(inputL + offset), fftInput_, (uint32_t)chunk);
+            arm_biquad_cascade_df2T_f32(&biquadR_, const_cast<float*>(inputR + offset), fftOutput_, (uint32_t)chunk);
+            for (int i = 0; i < chunk; ++i) {
+                const float dryL = inputL[offset + i];
+                const float dryR = inputR[offset + i];
+                const float wetL = dryL + (fftInput_[i] - dryL) * amount_;
+                const float wetR = dryR + (fftOutput_[i] - dryR) * amount_;
+                outputL[offset + i] = replaceOutputL ? wetL : (outputL[offset + i] + wetL);
+                outputR[offset + i] = replaceOutputR ? wetR : (outputR[offset + i] + wetR);
+            }
+            offset += chunk;
+        }
+    } else {
+        for (int i = 0; i < numFrames; ++i) {
+            outputL[i] = replaceOutputL ? inputL[i] : (outputL[i] + inputL[i]);
+            outputR[i] = replaceOutputR ? inputR[i] : (outputR[i] + inputR[i]);
+        }
+    }
+
+    runAnalysisIfDue();
+}
+
 float SpectralTarget::bandGainDb(int band) const {
     if (band < 0 || band >= kNumBands)
         return 0.0f;
     return desiredGainDb_[band];
+}
+
+float SpectralTarget::liveBandDb(int band) const {
+    if (band < 0 || band >= kNumBands)
+        return 0.0f;
+    return watchDb_[band];
+}
+
+float SpectralTarget::targetBandDb(int band) const {
+    if (band < 0 || band >= kNumBands)
+        return 0.0f;
+    return targetDb_[band];
+}
+
+float SpectralTarget::excessBandDb(int band) const {
+    if (band < 0 || band >= kNumBands || !targetReady_ || !watchReady_)
+        return 0.0f;
+    return watchDb_[band] - targetDb_[band];
+}
+
+float SpectralTarget::averageExcessDb() const {
+    if (!targetReady_ || !watchReady_)
+        return 0.0f;
+
+    float sum = 0.0f;
+    for (int i = 0; i < kNumBands; ++i) {
+        const float excess = watchDb_[i] - targetDb_[i];
+        if (excess > 0.0f)
+            sum += excess;
+    }
+    return sum / (float)kNumBands;
 }
 
 void SpectralTarget::setTargetBandsForTest(const float* db) {
@@ -242,10 +319,17 @@ void SpectralTarget::runAnalysisIfDue() {
         return;
 
     analyseFrame(fftInput_, bandsDb_);
-    if (mode_ == kCapture)
+    if (mode_ == kCapture) {
         captureTarget(bandsDb_);
-    else if (mode_ == kMatch && targetReady_)
-        updateMatching(bandsDb_);
+    } else if (targetReady_ && (mode_ == kWatch || mode_ == kMatch)) {
+        const float smoothing = watchReady_ ? 0.25f : 1.0f;
+        for (int i = 0; i < kNumBands; ++i)
+            watchDb_[i] += smoothing * (bandsDb_[i] - watchDb_[i]);
+        watchReady_ = true;
+
+        if (mode_ == kMatch)
+            updateMatching(watchDb_);
+    }
 }
 
 bool SpectralTarget::currentFrame(float* frame) const {
@@ -263,6 +347,7 @@ void SpectralTarget::analyseFrame(const float* frame, float* outBandsDb) {
     for (int i = 0; i < kFftSize; ++i)
         fftInput_[i] = frame[i] * window_[i];
 
+#if SPECTRAL_TARGET_USE_CMSIS
     arm_rfft_fast_f32(&fft_, fftInput_, fftOutput_, 0);
 
     const float floorMag = 1.0e-9f;
@@ -273,6 +358,19 @@ void SpectralTarget::analyseFrame(const float* frame, float* outBandsDb) {
         float imag = fftOutput_[2 * bin + 1];
         cepstrum_[bin] = log10f(sqrtf(real * real + imag * imag) + floorMag);
     }
+#else
+    memset(fftOutput_, 0, sizeof(fftOutput_));
+    complexFft(fftInput_, fftOutput_, false);
+
+    const float floorMag = 1.0e-9f;
+    cepstrum_[0] = log10f(fabsf(fftInput_[0]) + floorMag);
+    cepstrum_[kFftSize / 2] = log10f(fabsf(fftInput_[kFftSize / 2]) + floorMag);
+    for (int bin = 1; bin < kFftSize / 2; ++bin) {
+        float real = fftInput_[bin];
+        float imag = fftOutput_[bin];
+        cepstrum_[bin] = log10f(sqrtf(real * real + imag * imag) + floorMag);
+    }
+#endif
     for (int bin = kFftSize / 2 + 1; bin < kFftSize; ++bin)
         cepstrum_[bin] = cepstrum_[kFftSize - bin];
 
@@ -281,6 +379,7 @@ void SpectralTarget::analyseFrame(const float* frame, float* outBandsDb) {
 }
 
 void SpectralTarget::smoothLogMagnitude(float* logMag) {
+#if SPECTRAL_TARGET_USE_CMSIS
     arm_rfft_fast_f32(&fft_, logMag, fftOutput_, 0);
 
     const int half = kFftSize / 2;
@@ -292,7 +391,75 @@ void SpectralTarget::smoothLogMagnitude(float* logMag) {
         fftOutput_[1] = 0.0f;
 
     arm_rfft_fast_f32(&fft_, fftOutput_, logMag, 1);
+#else
+    memcpy(fftInput_, logMag, sizeof(fftInput_));
+    memset(fftOutput_, 0, sizeof(fftOutput_));
+    complexFft(fftInput_, fftOutput_, false);
+
+    const int keep = std::min(lifterCutoff_, kFftSize / 2 - 1);
+    for (int bin = keep + 1; bin < kFftSize - keep; ++bin) {
+        fftInput_[bin] = 0.0f;
+        fftOutput_[bin] = 0.0f;
+    }
+
+    complexFft(fftInput_, fftOutput_, true);
+    memcpy(logMag, fftInput_, sizeof(fftInput_));
+#endif
 }
+
+#if !SPECTRAL_TARGET_USE_CMSIS
+void SpectralTarget::complexFft(float* real, float* imag, bool inverse) {
+    int j = 0;
+    for (int i = 1; i < kFftSize; ++i) {
+        int bit = kFftSize >> 1;
+        for (; j & bit; bit >>= 1)
+            j ^= bit;
+        j ^= bit;
+        if (i < j) {
+            std::swap(real[i], real[j]);
+            std::swap(imag[i], imag[j]);
+        }
+    }
+
+    const float sign = inverse ? 1.0f : -1.0f;
+    for (int len = 2; len <= kFftSize; len <<= 1) {
+        const float angle = sign * 6.2831853071795864769f / (float)len;
+        const float wlenReal = cosf(angle);
+        const float wlenImag = sinf(angle);
+
+        for (int i = 0; i < kFftSize; i += len) {
+            float wReal = 1.0f;
+            float wImag = 0.0f;
+            const int halfLen = len >> 1;
+            for (int k = 0; k < halfLen; ++k) {
+                const int even = i + k;
+                const int odd = even + halfLen;
+                const float oddReal = real[odd] * wReal - imag[odd] * wImag;
+                const float oddImag = real[odd] * wImag + imag[odd] * wReal;
+                const float evenReal = real[even];
+                const float evenImag = imag[even];
+
+                real[even] = evenReal + oddReal;
+                imag[even] = evenImag + oddImag;
+                real[odd] = evenReal - oddReal;
+                imag[odd] = evenImag - oddImag;
+
+                const float nextReal = wReal * wlenReal - wImag * wlenImag;
+                wImag = wReal * wlenImag + wImag * wlenReal;
+                wReal = nextReal;
+            }
+        }
+    }
+
+    if (inverse) {
+        const float scale = 1.0f / (float)kFftSize;
+        for (int i = 0; i < kFftSize; ++i) {
+            real[i] *= scale;
+            imag[i] *= scale;
+        }
+    }
+}
+#endif
 
 void SpectralTarget::bandEnvelope(const float* smoothedLogMag, float* outBandsDb) const {
     for (int band = 0; band < kNumBands; ++band) {
@@ -354,10 +521,14 @@ void SpectralTarget::updateBiquadCoefficients() {
     biquad_.numStages = kNumBands;
     biquad_.pCoeffs = biquadCoeffs_;
     biquad_.pState = biquadState_;
+    biquadR_.numStages = kNumBands;
+    biquadR_.pCoeffs = biquadCoeffs_;
+    biquadR_.pState = biquadStateR_;
 }
 
 void SpectralTarget::resetFilterState() {
     memset(biquadState_, 0, sizeof(biquadState_));
+    memset(biquadStateR_, 0, sizeof(biquadStateR_));
 }
 
 float SpectralTarget::clamp(float x, float lo, float hi) {

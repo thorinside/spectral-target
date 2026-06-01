@@ -45,6 +45,7 @@ public:
         kBypass = 0,
         kCapture = 1,
         kMatch = 2,
+        kWatch = 3,
     };
 
     static const int kFftSize = 1024;
@@ -63,10 +64,22 @@ public:
     void setAmount(float value01);
 
     void processBlock(const float* input, float* output, int numFrames, bool replaceOutput);
+    void processBlockStereo(const float* inputL,
+                            const float* inputR,
+                            float* outputL,
+                            float* outputR,
+                            int numFrames,
+                            bool replaceOutputL,
+                            bool replaceOutputR);
 
     bool targetReady() const { return targetReady_; }
+    bool watchReady() const { return watchReady_; }
     Mode mode() const { return mode_; }
     float bandGainDb(int band) const;
+    float liveBandDb(int band) const;
+    float targetBandDb(int band) const;
+    float excessBandDb(int band) const;
+    float averageExcessDb() const;
 
     // Small deterministic hooks used by the host-side regression tests.
     void setTargetBandsForTest(const float* db);
@@ -79,6 +92,9 @@ private:
     bool currentFrame(float* frame) const;
     void analyseFrame(const float* frame, float* outBandsDb);
     void smoothLogMagnitude(float* logMag);
+#if !SPECTRAL_TARGET_USE_CMSIS
+    void complexFft(float* real, float* imag, bool inverse);
+#endif
     void bandEnvelope(const float* smoothedLogMag, float* outBandsDb) const;
     void captureTarget(const float* bandsDb);
     void updateMatching(const float* liveDb);
@@ -109,6 +125,7 @@ private:
     float fftOutput_[kFftSize];
     float cepstrum_[kFftSize];
     float bandsDb_[kNumBands];
+    float watchDb_[kNumBands];
     float targetDb_[kNumBands];
     float desiredGainDb_[kNumBands];
     float appliedGainDb_[kNumBands];
@@ -116,9 +133,12 @@ private:
     float bandCenters_[kNumBands];
     int targetCaptureCount_;
     bool targetReady_;
+    bool watchReady_;
 
     arm_rfft_fast_instance_f32 fft_;
     arm_biquad_cascade_df2T_instance_f32 biquad_;
+    arm_biquad_cascade_df2T_instance_f32 biquadR_;
     float biquadCoeffs_[kNumBands * 5];
     float biquadState_[kNumBands * 2];
+    float biquadStateR_[kNumBands * 2];
 };
