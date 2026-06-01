@@ -127,7 +127,7 @@ static bool draw(_NT_algorithm* self) {
 }
 
 static const _NT_factory factory = {
-    .guid = NT_MULTICHAR('N', 's', 'S', 't'),
+    .guid = NT_MULTICHAR('T', 'h', 'S', 't'),
     .name = "Spectral Target",
     .description = "Cepstral tonal balance matcher",
     .numSpecifications = 0,
