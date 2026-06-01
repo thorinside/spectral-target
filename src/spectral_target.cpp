@@ -335,8 +335,8 @@ void SpectralTarget::updateMatching(const float* liveDb) {
     const float median = median16(sorted);
 
     for (int i = 0; i < kNumBands; ++i) {
-        float correction = differences[i] - median;
-        desiredGainDb_[i] = clamp(desiredGainDb_[i] + correction * learningRate_, -kMaxGainDb, kMaxGainDb);
+        float correction = clamp(differences[i] - median, -kMaxGainDb, kMaxGainDb);
+        desiredGainDb_[i] += learningRate_ * (correction - desiredGainDb_[i]);
         appliedGainDb_[i] += 0.20f * (desiredGainDb_[i] - appliedGainDb_[i]);
     }
 
