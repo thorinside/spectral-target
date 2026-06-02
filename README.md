@@ -2,14 +2,14 @@
 
 Spectral Target is a stereo tonal-balance matching effect for the Expert Sleepers disting NT.
 
-It captures a reference spectral envelope, compares live input to that target with median-normalized band errors, and nudges a 16-band hybrid EQ bank toward the target shape. The audio path is zero-latency and uses a cascaded CMSIS-DSP DF2T biquad bank when built for hardware.
+It captures a reference tonal range, compares live input to that learned range with median-normalized band errors, and nudges a 16-band hybrid EQ bank only where the live signal falls outside the learned envelope. The audio path is zero-latency and uses a cascaded CMSIS-DSP DF2T biquad bank when built for hardware.
 
 ## Controls
 
-- **Mode**: Bypass, Capture, Match.
-- **Learn**: convergence speed for the matching optimizer.
-- **Detail**: cepstral lifter cutoff; higher values retain more envelope detail.
-- **Amount**: dry/wet amount of the correction filter.
+- **Mode**: Bypass, Capture, Match, Watch.
+- **Learn**: convergence speed for the matching optimizer; defaults to 0/off.
+- **Smooth**: analysis smoothing/stability; higher values react more slowly.
+- **Amount**: dry/wet amount of the correction filter; defaults to 100%.
 - **Input L/R and Output L/R modes**: disting NT stereo routing.
 
 ## Build

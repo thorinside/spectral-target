@@ -1,6 +1,7 @@
 #include "spectral_target.hpp"
 
 #include <stddef.h>
+#include <math.h>
 #include <distingnt/api.h>
 #include <new>
 
@@ -26,8 +27,8 @@ static const _NT_parameter parameters[] = {
     NT_PARAMETER_AUDIO_OUTPUT_WITH_MODE("Output L", 1, 13)
     NT_PARAMETER_AUDIO_OUTPUT_WITH_MODE("Output R", 1, 14)
     { .name = "Mode", .min = 0, .max = 3, .def = 0, .unit = kNT_unitEnum, .scaling = 0, .enumStrings = kModeStrings },
-    { .name = "Learn", .min = 0, .max = 100, .def = 40, .unit = kNT_unitPercent, .scaling = 0, .enumStrings = NULL },
-    { .name = "Detail", .min = 2, .max = 96, .def = 32, .unit = kNT_unitNone, .scaling = 0, .enumStrings = NULL },
+    { .name = "Learn", .min = 0, .max = 100, .def = 0, .unit = kNT_unitPercent, .scaling = 0, .enumStrings = NULL },
+    { .name = "Smooth", .min = 0, .max = 100, .def = 85, .unit = kNT_unitPercent, .scaling = 0, .enumStrings = NULL },
     { .name = "Amount", .min = 0, .max = 100, .def = 100, .unit = kNT_unitPercent, .scaling = 0, .enumStrings = NULL },
 };
 
@@ -50,7 +51,7 @@ static void applyAllParameters(_spectralTargetAlgorithm* alg) {
         return;
     alg->dsp->setMode((SpectralTarget::Mode)alg->v[kParamMode]);
     alg->dsp->setLearningRate(alg->v[kParamLearningRate] * 0.01f);
-    alg->dsp->setLifterCutoff(alg->v[kParamSmoothing]);
+    alg->dsp->setAnalysisSmoothing(alg->v[kParamSmoothing] * 0.01f);
     alg->dsp->setAmount(alg->v[kParamAmount] * 0.01f);
 }
 
@@ -88,7 +89,7 @@ static void parameterChanged(_NT_algorithm* self, int p) {
         alg->dsp->setLearningRate(alg->v[kParamLearningRate] * 0.01f);
         break;
     case kParamSmoothing:
-        alg->dsp->setLifterCutoff(alg->v[kParamSmoothing]);
+        alg->dsp->setAnalysisSmoothing(alg->v[kParamSmoothing] * 0.01f);
         break;
     case kParamAmount:
         alg->dsp->setAmount(alg->v[kParamAmount] * 0.01f);
@@ -161,7 +162,7 @@ static void drawWatch(SpectralTarget* dsp) {
         return;
     }
 
-    NT_drawText(8, 20, "excess over target", 10, kNT_textLeft, kNT_textNormal);
+    NT_drawText(8, 20, "outside target range", 10, kNT_textLeft, kNT_textNormal);
     NT_drawText(166, 20, "avg", 10, kNT_textLeft, kNT_textNormal);
     char value[kNT_parameterStringSize];
     NT_floatToString(value, dsp->averageExcessDb(), 1);
@@ -171,20 +172,23 @@ static void drawWatch(SpectralTarget* dsp) {
     const int graphLeft = 8;
     const int graphTop = 28;
     const int graphBottom = 61;
+    const int graphMid = 45;
     const int barPitch = 15;
     const int barWidth = 10;
-    NT_drawShapeI(kNT_line, graphLeft, graphBottom, 248, graphBottom, 6);
+    NT_drawShapeI(kNT_line, graphLeft, graphMid, 248, graphMid, 6);
 
     for (int band = 0; band < SpectralTarget::kNumBands; ++band) {
-        const float excess = dsp->excessBandDb(band);
-        if (excess <= 0.0f)
+        const float outside = dsp->excessBandDb(band);
+        if (outside == 0.0f)
             continue;
 
-        const int height = clampInt((int)(excess * 2.0f + 0.5f), 1, graphBottom - graphTop);
+        const int height = clampInt((int)(fabsf(outside) * 2.0f + 0.5f), 1, graphMid - graphTop);
         const int x0 = graphLeft + band * barPitch;
-        const int y0 = graphBottom - height;
-        const int colour = excess > 6.0f ? 15 : (excess > 3.0f ? 12 : 8);
-        NT_drawShapeI(kNT_rectangle, x0, y0, x0 + barWidth, graphBottom - 1, colour);
+        const int colour = fabsf(outside) > 6.0f ? 15 : (fabsf(outside) > 3.0f ? 12 : 8);
+        if (outside > 0.0f)
+            NT_drawShapeI(kNT_rectangle, x0, graphMid - height, x0 + barWidth, graphMid - 1, colour);
+        else
+            NT_drawShapeI(kNT_rectangle, x0, graphMid + 1, x0 + barWidth, clampInt(graphMid + height, graphTop, graphBottom), colour);
     }
 }
 

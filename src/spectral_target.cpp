@@ -89,13 +89,15 @@ SpectralTarget::SpectralTarget()
       captureHop_(24000),
       samplesUntilAnalysis_(4800),
       lifterCutoff_(32),
-      learningRate_(0.10f),
+      learningRate_(0.0f),
+      analysisSmoothing_(0.85f),
       amount_(1.0f),
       ringWrite_(0),
       ringFill_(0),
       targetCaptureCount_(0),
       targetReady_(false),
-      watchReady_(false) {
+      watchReady_(false),
+      matchReady_(false) {
     memset(ring_, 0, sizeof(ring_));
     memset(window_, 0, sizeof(window_));
     memset(fftInput_, 0, sizeof(fftInput_));
@@ -105,6 +107,9 @@ SpectralTarget::SpectralTarget()
     memset(analysisEnergy_, 0, sizeof(analysisEnergy_));
     memset(watchDb_, 0, sizeof(watchDb_));
     memset(targetDb_, 0, sizeof(targetDb_));
+    memset(targetM2Db_, 0, sizeof(targetM2Db_));
+    memset(targetMinDb_, 0, sizeof(targetMinDb_));
+    memset(targetMaxDb_, 0, sizeof(targetMaxDb_));
     memset(desiredGainDb_, 0, sizeof(desiredGainDb_));
     memset(appliedGainDb_, 0, sizeof(appliedGainDb_));
     memset(bandEdges_, 0, sizeof(bandEdges_));
@@ -157,6 +162,9 @@ void SpectralTarget::reset() {
     memset(analysisEnergy_, 0, sizeof(analysisEnergy_));
     memset(watchDb_, 0, sizeof(watchDb_));
     memset(targetDb_, 0, sizeof(targetDb_));
+    memset(targetM2Db_, 0, sizeof(targetM2Db_));
+    memset(targetMinDb_, 0, sizeof(targetMinDb_));
+    memset(targetMaxDb_, 0, sizeof(targetMaxDb_));
     memset(desiredGainDb_, 0, sizeof(desiredGainDb_));
     memset(appliedGainDb_, 0, sizeof(appliedGainDb_));
     ringWrite_ = 0;
@@ -164,6 +172,7 @@ void SpectralTarget::reset() {
     targetCaptureCount_ = 0;
     targetReady_ = false;
     watchReady_ = false;
+    matchReady_ = false;
     samplesUntilAnalysis_ = analysisHop_;
     resetFilterState();
     resetAnalysisState();
@@ -176,11 +185,18 @@ void SpectralTarget::setMode(Mode mode) {
         return;
 
     mode_ = mode;
+    if (mode_ == kMatch)
+        matchReady_ = false;
+
     if (mode_ == kCapture) {
         targetCaptureCount_ = 0;
         targetReady_ = false;
         watchReady_ = false;
+        matchReady_ = false;
         memset(targetDb_, 0, sizeof(targetDb_));
+        memset(targetM2Db_, 0, sizeof(targetM2Db_));
+        memset(targetMinDb_, 0, sizeof(targetMinDb_));
+        memset(targetMaxDb_, 0, sizeof(targetMaxDb_));
         memset(watchDb_, 0, sizeof(watchDb_));
         memset(analysisEnergy_, 0, sizeof(analysisEnergy_));
         memset(desiredGainDb_, 0, sizeof(desiredGainDb_));
@@ -197,6 +213,10 @@ void SpectralTarget::setLearningRate(float value01) {
 
 void SpectralTarget::setLifterCutoff(int coefficientsToKeep) {
     lifterCutoff_ = (int)clamp((float)coefficientsToKeep, 2.0f, (float)(kFftSize / 2 - 1));
+}
+
+void SpectralTarget::setAnalysisSmoothing(float value01) {
+    analysisSmoothing_ = clamp(value01, 0.0f, 1.0f);
 }
 
 void SpectralTarget::setAmount(float value01) {
@@ -298,7 +318,15 @@ float SpectralTarget::targetBandDb(int band) const {
 float SpectralTarget::excessBandDb(int band) const {
     if (band < 0 || band >= kNumBands || !targetReady_ || !watchReady_)
         return 0.0f;
-    return watchDb_[band] - targetDb_[band];
+
+    const float tolerance = targetToleranceDb(band);
+    const float lower = targetDb_[band] - tolerance;
+    const float upper = targetDb_[band] + tolerance;
+    if (watchDb_[band] > upper)
+        return watchDb_[band] - upper;
+    if (watchDb_[band] < lower)
+        return watchDb_[band] - lower;
+    return 0.0f;
 }
 
 float SpectralTarget::averageExcessDb() const {
@@ -306,18 +334,21 @@ float SpectralTarget::averageExcessDb() const {
         return 0.0f;
 
     float sum = 0.0f;
-    for (int i = 0; i < kNumBands; ++i) {
-        const float excess = watchDb_[i] - targetDb_[i];
-        if (excess > 0.0f)
-            sum += excess;
-    }
+    for (int i = 0; i < kNumBands; ++i)
+        sum += fabsf(excessBandDb(i));
     return sum / (float)kNumBands;
 }
 
 void SpectralTarget::setTargetBandsForTest(const float* db) {
-    for (int i = 0; i < kNumBands; ++i)
+    for (int i = 0; i < kNumBands; ++i) {
         targetDb_[i] = db[i];
+        targetM2Db_[i] = 0.0f;
+        targetMinDb_[i] = db[i];
+        targetMaxDb_[i] = db[i];
+    }
+    targetCaptureCount_ = 1;
     targetReady_ = true;
+    matchReady_ = false;
 }
 
 void SpectralTarget::updateMatchingForTest(const float* liveDb) {
@@ -358,7 +389,7 @@ void SpectralTarget::runAnalysisIfDue() {
     if (mode_ == kCapture) {
         captureTarget(bandsDb_);
     } else if (targetReady_ && (mode_ == kWatch || mode_ == kMatch)) {
-        const float smoothing = watchReady_ ? 0.10f : 1.0f;
+        const float smoothing = watchReady_ ? (1.0f - analysisSmoothing_) : 1.0f;
         for (int i = 0; i < kNumBands; ++i)
             watchDb_[i] += smoothing * (bandsDb_[i] - watchDb_[i]);
         watchReady_ = true;
@@ -524,12 +555,28 @@ void SpectralTarget::bandEnvelope(const float* smoothedLogMag, float* outBandsDb
 
 void SpectralTarget::captureTarget(const float* bandsDb) {
     const int count = std::min(targetCaptureCount_, 9999);
-    const float weightOld = (float)count / (float)(count + 1);
-    const float weightNew = 1.0f / (float)(count + 1);
-    for (int i = 0; i < kNumBands; ++i)
-        targetDb_[i] = targetDb_[i] * weightOld + bandsDb[i] * weightNew;
-    targetCaptureCount_ = count + 1;
+    const int newCount = count + 1;
+
+    for (int i = 0; i < kNumBands; ++i) {
+        const float x = bandsDb[i];
+        if (count == 0) {
+            targetDb_[i] = x;
+            targetM2Db_[i] = 0.0f;
+            targetMinDb_[i] = x;
+            targetMaxDb_[i] = x;
+        } else {
+            const float delta = x - targetDb_[i];
+            targetDb_[i] += delta / (float)newCount;
+            const float delta2 = x - targetDb_[i];
+            targetM2Db_[i] += delta * delta2;
+            targetMinDb_[i] = std::min(targetMinDb_[i], x);
+            targetMaxDb_[i] = std::max(targetMaxDb_[i], x);
+        }
+    }
+
+    targetCaptureCount_ = newCount;
     targetReady_ = targetCaptureCount_ > 0;
+    matchReady_ = false;
 }
 
 void SpectralTarget::updateMatching(const float* liveDb) {
@@ -545,10 +592,24 @@ void SpectralTarget::updateMatching(const float* liveDb) {
     const float median = median16(sorted);
 
     for (int i = 0; i < kNumBands; ++i) {
-        float correction = clamp(differences[i] - median, -kMaxGainDb, kMaxGainDb);
-        desiredGainDb_[i] += learningRate_ * (correction - desiredGainDb_[i]);
+        const float normalisedLive = liveDb[i] + median;
+        const float tolerance = targetToleranceDb(i);
+        const float lower = targetDb_[i] - tolerance;
+        const float upper = targetDb_[i] + tolerance;
+        float correction = 0.0f;
+        if (normalisedLive < lower)
+            correction = lower - normalisedLive;
+        else if (normalisedLive > upper)
+            correction = upper - normalisedLive;
+
+        correction = clamp(correction, -kMaxGainDb, kMaxGainDb);
+        if (!matchReady_)
+            desiredGainDb_[i] = correction;
+        else
+            desiredGainDb_[i] += learningRate_ * (correction - desiredGainDb_[i]);
         appliedGainDb_[i] += 0.05f * (desiredGainDb_[i] - appliedGainDb_[i]);
     }
+    matchReady_ = true;
 
     updateBiquadCoefficients();
 }
@@ -586,6 +647,17 @@ void SpectralTarget::resetAnalysisState() {
     memset(analysisEnergy_, 0, sizeof(analysisEnergy_));
     memset(analysisState_, 0, sizeof(analysisState_));
     analysisSamples_ = 0;
+}
+
+float SpectralTarget::targetToleranceDb(int band) const {
+    if (band < 0 || band >= kNumBands)
+        return 1.5f;
+
+    if (targetCaptureCount_ < 2)
+        return 1.5f;
+
+    const float variance = std::max(0.0f, targetM2Db_[band] / (float)(targetCaptureCount_ - 1));
+    return clamp(1.5f * sqrtf(variance), 1.5f, 12.0f);
 }
 
 float SpectralTarget::clamp(float x, float lo, float hi) {

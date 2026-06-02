@@ -46,6 +46,24 @@ static void test_matching_clamps_and_keeps_shape() {
     assert(fabsf(target.bandGainDb(0)) <= SpectralTarget::kMaxGainDb + 1.0e-5f);
 }
 
+static void test_matching_uses_target_range_deadband() {
+    SpectralTarget target;
+    target.prepare(48000.0f);
+    target.setLearningRate(1.0f);
+
+    float targetDb[SpectralTarget::kNumBands];
+    float liveDb[SpectralTarget::kNumBands];
+    for (int i = 0; i < SpectralTarget::kNumBands; ++i) {
+        targetDb[i] = 0.0f;
+        liveDb[i] = 0.0f;
+    }
+    targetDb[5] = 1.0f;
+
+    target.setTargetBandsForTest(targetDb);
+    target.updateMatchingForTest(liveDb);
+    assert(fabsf(target.bandGainDb(5)) < 1.0e-5f);
+}
+
 static void test_matching_converges_without_integrator_overshoot() {
     SpectralTarget target;
     target.prepare(48000.0f);
@@ -63,8 +81,33 @@ static void test_matching_converges_without_integrator_overshoot() {
     for (int i = 0; i < 64; ++i)
         target.updateMatchingForTest(liveDb);
 
-    assert(target.bandGainDb(5) > 3.9f);
-    assert(target.bandGainDb(5) < 4.1f);
+    assert(target.bandGainDb(5) > 2.4f);
+    assert(target.bandGainDb(5) < 2.6f);
+}
+
+static void test_learn_zero_seeds_then_freezes_match_curve() {
+    SpectralTarget target;
+    target.prepare(48000.0f);
+    target.setLearningRate(0.0f);
+
+    float targetDb[SpectralTarget::kNumBands];
+    float liveDb[SpectralTarget::kNumBands];
+    for (int i = 0; i < SpectralTarget::kNumBands; ++i) {
+        targetDb[i] = 0.0f;
+        liveDb[i] = 0.0f;
+    }
+    targetDb[5] = 4.0f;
+
+    target.setTargetBandsForTest(targetDb);
+    target.updateMatchingForTest(liveDb);
+    const float seededGain = target.bandGainDb(5);
+    assert(seededGain > 2.4f);
+    assert(seededGain < 2.6f);
+
+    liveDb[5] = 8.0f;
+    target.updateMatchingForTest(liveDb);
+    assert(target.bandGainDb(5) > 2.4f);
+    assert(target.bandGainDb(5) < 2.6f);
 }
 
 static void test_bypass_stereo_is_dry() {
@@ -169,7 +212,9 @@ static void test_cepstral_analysis_is_finite() {
 int main() {
     test_median_normalization_removes_loudness();
     test_matching_clamps_and_keeps_shape();
+    test_matching_uses_target_range_deadband();
     test_matching_converges_without_integrator_overshoot();
+    test_learn_zero_seeds_then_freezes_match_curve();
     test_bypass_stereo_is_dry();
     test_amount_zero_is_dry_even_when_matching();
     test_match_mode_filters_audio_when_amount_full();

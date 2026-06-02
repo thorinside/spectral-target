@@ -61,6 +61,7 @@ public:
     void setMode(Mode mode);
     void setLearningRate(float value01);
     void setLifterCutoff(int coefficientsToKeep);
+    void setAnalysisSmoothing(float value01);
     void setAmount(float value01);
 
     void processBlock(const float* input, float* output, int numFrames, bool replaceOutput);
@@ -103,6 +104,7 @@ private:
     void updateAnalysisCoefficients();
     void resetFilterState();
     void resetAnalysisState();
+    float targetToleranceDb(int band) const;
 
     static float clamp(float x, float lo, float hi);
     static float dbToLinear(float db);
@@ -119,6 +121,7 @@ private:
     int samplesUntilAnalysis_;
     int lifterCutoff_;
     float learningRate_;
+    float analysisSmoothing_;
     float amount_;
 
     float ring_[kFftSize];
@@ -133,6 +136,9 @@ private:
     float analysisEnergy_[kNumBands];
     float watchDb_[kNumBands];
     float targetDb_[kNumBands];
+    float targetM2Db_[kNumBands];
+    float targetMinDb_[kNumBands];
+    float targetMaxDb_[kNumBands];
     float desiredGainDb_[kNumBands];
     float appliedGainDb_[kNumBands];
     float bandEdges_[kNumBands + 1];
@@ -140,6 +146,7 @@ private:
     int targetCaptureCount_;
     bool targetReady_;
     bool watchReady_;
+    bool matchReady_;
 
     arm_rfft_fast_instance_f32 fft_;
     arm_biquad_cascade_df2T_instance_f32 biquad_;
