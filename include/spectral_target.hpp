@@ -91,6 +91,7 @@ private:
     void runAnalysisIfDue();
     bool currentFrame(float* frame) const;
     void analyseFrame(const float* frame, float* outBandsDb);
+    void analyseFrameFast(const float* frame, float* outBandsDb);
     void smoothLogMagnitude(float* logMag);
 #if !SPECTRAL_TARGET_USE_CMSIS
     void complexFft(float* real, float* imag, bool inverse);
@@ -99,7 +100,9 @@ private:
     void captureTarget(const float* bandsDb);
     void updateMatching(const float* liveDb);
     void updateBiquadCoefficients();
+    void updateAnalysisCoefficients();
     void resetFilterState();
+    void resetAnalysisState();
 
     static float clamp(float x, float lo, float hi);
     static float dbToLinear(float db);
@@ -107,10 +110,12 @@ private:
     static void makePeaking(float sampleRate, float frequency, float q, float gainDb, float* coeffs);
     static void makeLowShelf(float sampleRate, float frequency, float slope, float gainDb, float* coeffs);
     static void makeHighShelf(float sampleRate, float frequency, float slope, float gainDb, float* coeffs);
+    static void makeBandpass(float sampleRate, float frequency, float q, float* coeffs);
 
     Mode mode_;
     float sampleRate_;
     int analysisHop_;
+    int captureHop_;
     int samplesUntilAnalysis_;
     int lifterCutoff_;
     float learningRate_;
@@ -125,6 +130,7 @@ private:
     float fftOutput_[kFftSize];
     float cepstrum_[kFftSize];
     float bandsDb_[kNumBands];
+    float analysisEnergy_[kNumBands];
     float watchDb_[kNumBands];
     float targetDb_[kNumBands];
     float desiredGainDb_[kNumBands];
@@ -141,4 +147,7 @@ private:
     float biquadCoeffs_[kNumBands * 5];
     float biquadState_[kNumBands * 2];
     float biquadStateR_[kNumBands * 2];
+    float analysisCoeffs_[kNumBands * 5];
+    float analysisState_[kNumBands * 2];
+    int analysisSamples_;
 };

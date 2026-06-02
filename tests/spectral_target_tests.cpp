@@ -67,6 +67,29 @@ static void test_matching_converges_without_integrator_overshoot() {
     assert(target.bandGainDb(5) < 4.1f);
 }
 
+static void test_bypass_stereo_is_dry() {
+    SpectralTarget target;
+    target.prepare(48000.0f);
+    target.setMode(SpectralTarget::kBypass);
+
+    float inputL[64];
+    float inputR[64];
+    float outputL[64];
+    float outputR[64];
+    for (int i = 0; i < 64; ++i) {
+        inputL[i] = sinf(0.03f * (float)i);
+        inputR[i] = cosf(0.02f * (float)i);
+        outputL[i] = -10.0f;
+        outputR[i] = 10.0f;
+    }
+
+    target.processBlockStereo(inputL, inputR, outputL, outputR, 64, true, true);
+    for (int i = 0; i < 64; ++i) {
+        assert(fabsf(outputL[i] - inputL[i]) < 1.0e-6f);
+        assert(fabsf(outputR[i] - inputR[i]) < 1.0e-6f);
+    }
+}
+
 static void test_amount_zero_is_dry_even_when_matching() {
     SpectralTarget target;
     target.prepare(48000.0f);
@@ -147,6 +170,7 @@ int main() {
     test_median_normalization_removes_loudness();
     test_matching_clamps_and_keeps_shape();
     test_matching_converges_without_integrator_overshoot();
+    test_bypass_stereo_is_dry();
     test_amount_zero_is_dry_even_when_matching();
     test_match_mode_filters_audio_when_amount_full();
     test_cepstral_analysis_is_finite();

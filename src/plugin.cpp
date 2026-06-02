@@ -98,6 +98,19 @@ static void parameterChanged(_NT_algorithm* self, int p) {
     }
 }
 
+static void routeDryStereo(const float* inputL,
+                           const float* inputR,
+                           float* outputL,
+                           float* outputR,
+                           int numFrames,
+                           bool replaceOutputL,
+                           bool replaceOutputR) {
+    for (int i = 0; i < numFrames; ++i) {
+        outputL[i] = replaceOutputL ? inputL[i] : (outputL[i] + inputL[i]);
+        outputR[i] = replaceOutputR ? inputR[i] : (outputR[i] + inputR[i]);
+    }
+}
+
 static void step(_NT_algorithm* self, float* busFrames, int numFramesBy4) {
     _spectralTargetAlgorithm* alg = (_spectralTargetAlgorithm*)self;
     if (!alg || !alg->dsp)
@@ -122,6 +135,12 @@ static void step(_NT_algorithm* self, float* busFrames, int numFramesBy4) {
     float* outputR = busFrames + outputRBus * numFrames;
     const bool replaceL = alg->v[kParamOutputLMode];
     const bool replaceR = alg->v[kParamOutputRMode];
+
+    if (alg->v[kParamMode] == SpectralTarget::kBypass) {
+        routeDryStereo(inputL, inputR, outputL, outputR, numFrames, replaceL, replaceR);
+        return;
+    }
+
     alg->dsp->processBlockStereo(inputL, inputR, outputL, outputR, numFrames, replaceL, replaceR);
 }
 
