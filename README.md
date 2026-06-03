@@ -78,3 +78,7 @@ make hardware USE_CMSIS=1 CMSIS_DSP_DIR=/path/to/CMSIS-DSP CMSIS_CORE_DIR=/path/
 ```
 
 `DISTINGNT_API_DIR` defaults to the `distingNT_API` git submodule and can be overridden if needed.
+
+## License
+
+MIT. See `LICENSE`.
