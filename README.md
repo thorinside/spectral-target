@@ -71,6 +71,10 @@ Build artifacts are written to `plugins/`:
 - `plugins/spectral_target.o` for the hardware plugin.
 - `plugins/spectral_target.dylib` or `plugins/spectral_target.so` for `nt_emu`, depending on the host OS.
 
+Tagged releases matching `v*` are built by GitHub Actions and uploaded as
+`spectral_target-plugin.zip`, with the plugin placed under
+`programs/plug-ins/spectral_target/` for copying to the disting NT SD card.
+
 The default hardware build uses the built-in fallback FFT/biquad shim so the plugin does not depend on CMSIS-DSP symbols being exported by the disting NT firmware. If you are bundling/linking CMSIS-DSP yourself, opt in explicitly:
 
 ```sh
