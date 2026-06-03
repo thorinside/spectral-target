@@ -1,6 +1,7 @@
 PLUGIN_NAME := spectral_target
 SOURCES := src/plugin.cpp src/spectral_target.cpp
 TEST_SOURCES := tests/spectral_target_tests.cpp src/spectral_target.cpp
+ANALYSIS_SOURCES := tests/qualitative_analysis.cpp src/spectral_target.cpp
 
 DISTINGNT_API_DIR ?= distingNT_API
 USE_CMSIS ?= 0
@@ -67,16 +68,22 @@ test: $(BUILD_DIR)/spectral_target_tests
 $(BUILD_DIR)/spectral_target_tests: $(TEST_SOURCES) | $(BUILD_DIR)
 	$(CXX) $(COMMON_CXXFLAGS) -DSPECTRAL_TARGET_FORCE_FALLBACK=1 -O0 -g -o $@ $^ -lm
 
+analysis: $(BUILD_DIR)/spectral_target_analysis | $(BUILD_DIR)/analysis
+	./$(BUILD_DIR)/spectral_target_analysis $(BUILD_DIR)/analysis
+
+$(BUILD_DIR)/spectral_target_analysis: $(ANALYSIS_SOURCES) | $(BUILD_DIR)
+	$(CXX) $(COMMON_CXXFLAGS) -DSPECTRAL_TARGET_FORCE_FALLBACK=1 -O0 -g -o $@ $^ -lm
+
 check: hardware
 	arm-none-eabi-nm $(PLUGIN_DIR)/$(PLUGIN_NAME).o | grep ' U ' || true
 
 size: hardware
 	arm-none-eabi-size -A $(PLUGIN_DIR)/$(PLUGIN_NAME).o
 
-$(BUILD_DIR) $(BUILD_DIR)/hardware $(PLUGIN_DIR):
+$(BUILD_DIR) $(BUILD_DIR)/hardware $(BUILD_DIR)/analysis $(PLUGIN_DIR):
 	mkdir -p $@
 
 clean:
 	rm -rf $(BUILD_DIR) $(PLUGIN_DIR)
 
-.PHONY: all hardware emu test check size clean submodules deps
+.PHONY: all hardware emu test analysis check size clean submodules deps

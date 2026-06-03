@@ -77,6 +77,13 @@ public:
     bool watchReady() const { return watchReady_; }
     Mode mode() const { return mode_; }
     float bandGainDb(int band) const;
+    float correctionBandDb(int band) const;
+    float targetToleranceBandDb(int band) const;
+    float targetLowBandDb(int band) const;
+    float targetHighBandDb(int band) const;
+    float targetM2BandDb(int band) const;
+    int targetCaptureCount() const { return targetCaptureCount_; }
+    void restoreTargetForPreset(int count, const float* mean, const float* m2, const float* minDb, const float* maxDb);
     float liveBandDb(int band) const;
     float targetBandDb(int band) const;
     float excessBandDb(int band) const;
@@ -90,7 +97,6 @@ public:
 private:
     void pushAnalysisSample(float sample);
     void runAnalysisIfDue();
-    bool currentFrame(float* frame) const;
     void analyseFrame(const float* frame, float* outBandsDb);
     void analyseFrameFast(const float* frame, float* outBandsDb);
     void smoothLogMagnitude(float* logMag);
@@ -123,10 +129,6 @@ private:
     float learningRate_;
     float analysisSmoothing_;
     float amount_;
-
-    float ring_[kFftSize];
-    int ringWrite_;
-    int ringFill_;
 
     float window_[kFftSize];
     float fftInput_[kFftSize];

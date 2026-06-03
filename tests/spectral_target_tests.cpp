@@ -110,6 +110,109 @@ static void test_learn_zero_seeds_then_freezes_match_curve() {
     assert(target.bandGainDb(5) < 2.6f);
 }
 
+static void test_restore_target_for_preset_keeps_range_statistics() {
+    SpectralTarget target;
+    target.prepare(48000.0f);
+
+    float mean[SpectralTarget::kNumBands];
+    float m2[SpectralTarget::kNumBands];
+    float minDb[SpectralTarget::kNumBands];
+    float maxDb[SpectralTarget::kNumBands];
+    for (int i = 0; i < SpectralTarget::kNumBands; ++i) {
+        mean[i] = (float)i;
+        m2[i] = 16.0f;
+        minDb[i] = mean[i] - 2.0f;
+        maxDb[i] = mean[i] + 3.0f;
+    }
+
+    target.restoreTargetForPreset(5, mean, m2, minDb, maxDb);
+
+    assert(target.targetReady());
+    assert(target.targetCaptureCount() == 5);
+    for (int i = 0; i < SpectralTarget::kNumBands; ++i) {
+        assert(fabsf(target.targetBandDb(i) - mean[i]) < 1.0e-6f);
+        assert(fabsf(target.targetM2BandDb(i) - m2[i]) < 1.0e-6f);
+        assert(fabsf(target.targetLowBandDb(i) - minDb[i]) < 1.0e-6f);
+        assert(fabsf(target.targetHighBandDb(i) - maxDb[i]) < 1.0e-6f);
+        assert(target.targetToleranceBandDb(i) > 1.5f);
+    }
+}
+
+static void test_restore_target_for_preset_clamps_invalid_statistics() {
+    SpectralTarget target;
+    target.prepare(48000.0f);
+
+    float mean[SpectralTarget::kNumBands];
+    float m2[SpectralTarget::kNumBands];
+    for (int i = 0; i < SpectralTarget::kNumBands; ++i) {
+        mean[i] = -12.0f + (float)i;
+        m2[i] = -4.0f;
+    }
+
+    target.restoreTargetForPreset(-7, mean, m2, NULL, NULL);
+
+    assert(!target.targetReady());
+    assert(target.targetCaptureCount() == 0);
+    for (int i = 0; i < SpectralTarget::kNumBands; ++i) {
+        assert(fabsf(target.targetBandDb(i) - mean[i]) < 1.0e-6f);
+        assert(target.targetM2BandDb(i) == 0.0f);
+        assert(fabsf(target.targetLowBandDb(i) - mean[i]) < 1.0e-6f);
+        assert(fabsf(target.targetHighBandDb(i) - mean[i]) < 1.0e-6f);
+        assert(fabsf(target.targetToleranceBandDb(i) - 1.5f) < 1.0e-6f);
+    }
+}
+
+static void test_restore_target_for_preset_resets_active_correction() {
+    SpectralTarget target;
+    target.prepare(48000.0f);
+    target.setLearningRate(1.0f);
+
+    float targetDb[SpectralTarget::kNumBands];
+    float liveDb[SpectralTarget::kNumBands];
+    float restored[SpectralTarget::kNumBands];
+    for (int i = 0; i < SpectralTarget::kNumBands; ++i) {
+        targetDb[i] = (i < 8) ? 6.0f : -6.0f;
+        liveDb[i] = (i < 8) ? -6.0f : 6.0f;
+        restored[i] = 0.0f;
+    }
+
+    target.setTargetBandsForTest(targetDb);
+    target.updateMatchingForTest(liveDb);
+    assert(fabsf(target.correctionBandDb(0)) > 0.01f);
+
+    target.restoreTargetForPreset(1, restored, NULL, NULL, NULL);
+    for (int i = 0; i < SpectralTarget::kNumBands; ++i) {
+        assert(target.bandGainDb(i) == 0.0f);
+        assert(target.correctionBandDb(i) == 0.0f);
+    }
+}
+
+static void test_capture_mode_learns_target_from_audio() {
+    SpectralTarget target;
+    target.prepare(48000.0f);
+    target.setMode(SpectralTarget::kCapture);
+
+    float input[64];
+    float output[64];
+    const int totalFrames = 48000 * 2;
+    for (int offset = 0; offset < totalFrames; offset += 64) {
+        for (int i = 0; i < 64; ++i) {
+            const float t = (float)(offset + i) / 48000.0f;
+            input[i] = 0.4f * sinf(2.0f * 3.14159265358979323846f * 220.0f * t)
+                     + 0.2f * sinf(2.0f * 3.14159265358979323846f * 1760.0f * t);
+        }
+        target.processBlock(input, output, 64, true);
+    }
+
+    assert(target.targetReady());
+    assert(target.targetCaptureCount() >= 3);
+    for (int i = 0; i < SpectralTarget::kNumBands; ++i) {
+        assert(isfinite(target.targetBandDb(i)));
+        assert(isfinite(target.targetLowBandDb(i)));
+        assert(isfinite(target.targetHighBandDb(i)));
+    }
+}
+
 static void test_bypass_stereo_is_dry() {
     SpectralTarget target;
     target.prepare(48000.0f);
@@ -129,6 +232,29 @@ static void test_bypass_stereo_is_dry() {
     target.processBlockStereo(inputL, inputR, outputL, outputR, 64, true, true);
     for (int i = 0; i < 64; ++i) {
         assert(fabsf(outputL[i] - inputL[i]) < 1.0e-6f);
+        assert(fabsf(outputR[i] - inputR[i]) < 1.0e-6f);
+    }
+}
+
+static void test_bypass_stereo_respects_replace_modes() {
+    SpectralTarget target;
+    target.prepare(48000.0f);
+    target.setMode(SpectralTarget::kBypass);
+
+    float inputL[64];
+    float inputR[64];
+    float outputL[64];
+    float outputR[64];
+    for (int i = 0; i < 64; ++i) {
+        inputL[i] = 0.01f * (float)i;
+        inputR[i] = -0.01f * (float)i;
+        outputL[i] = 1.0f;
+        outputR[i] = 1.0f;
+    }
+
+    target.processBlockStereo(inputL, inputR, outputL, outputR, 64, false, true);
+    for (int i = 0; i < 64; ++i) {
+        assert(fabsf(outputL[i] - (1.0f + inputL[i])) < 1.0e-6f);
         assert(fabsf(outputR[i] - inputR[i]) < 1.0e-6f);
     }
 }
@@ -215,7 +341,12 @@ int main() {
     test_matching_uses_target_range_deadband();
     test_matching_converges_without_integrator_overshoot();
     test_learn_zero_seeds_then_freezes_match_curve();
+    test_restore_target_for_preset_keeps_range_statistics();
+    test_restore_target_for_preset_clamps_invalid_statistics();
+    test_restore_target_for_preset_resets_active_correction();
+    test_capture_mode_learns_target_from_audio();
     test_bypass_stereo_is_dry();
+    test_bypass_stereo_respects_replace_modes();
     test_amount_zero_is_dry_even_when_matching();
     test_match_mode_filters_audio_when_amount_full();
     test_cepstral_analysis_is_finite();
